@@ -1,0 +1,6 @@
+.git
+.env
+.venv
+tmp
+**/__pycache__
+**/app/generated

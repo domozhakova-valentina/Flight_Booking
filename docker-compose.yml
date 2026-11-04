@@ -1,0 +1,188 @@
+services:
+  booking-db:
+    image: postgres:16
+    environment:
+      POSTGRES_DB: booking
+      POSTGRES_USER: booking
+      POSTGRES_PASSWORD: ${BOOKING_DB_PASSWORD:-booking_dev_password}
+    volumes:
+      - booking-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U booking -d booking"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  flight-db:
+    image: postgres:16
+    environment:
+      POSTGRES_DB: flight
+      POSTGRES_USER: flight
+      POSTGRES_PASSWORD: ${FLIGHT_DB_PASSWORD:-flight_dev_password}
+    volumes:
+      - flight-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U flight -d flight"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    networks:
+      default:
+        ipv4_address: 172.30.240.10
+    command: ["sh", "/config/start.sh"]
+    volumes:
+      - ./redis/start.sh:/config/start.sh:ro
+      - ./redis/master.conf:/config/redis.conf:ro
+      - redis-master-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  redis-replica:
+    image: redis:7-alpine
+    networks:
+      default:
+        ipv4_address: 172.30.240.11
+    command: ["sh", "/config/start.sh"]
+    volumes:
+      - ./redis/start.sh:/config/start.sh:ro
+      - ./redis/replica.conf:/config/redis.conf:ro
+      - redis-replica-data:/data
+    depends_on:
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  sentinel-1:
+    image: redis:7-alpine
+    command: ["sh", "/config/start.sh", "--sentinel"]
+    volumes:
+      - ./redis/start.sh:/config/start.sh:ro
+      - ./redis/sentinel.conf:/config/redis.conf:ro
+      - sentinel-1-data:/data
+    depends_on:
+      redis:
+        condition: service_healthy
+      redis-replica:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "redis-cli", "-p", "26379", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  sentinel-2:
+    image: redis:7-alpine
+    command: ["sh", "/config/start.sh", "--sentinel"]
+    volumes:
+      - ./redis/start.sh:/config/start.sh:ro
+      - ./redis/sentinel.conf:/config/redis.conf:ro
+      - sentinel-2-data:/data
+    depends_on:
+      redis:
+        condition: service_healthy
+      redis-replica:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "redis-cli", "-p", "26379", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  sentinel-3:
+    image: redis:7-alpine
+    command: ["sh", "/config/start.sh", "--sentinel"]
+    volumes:
+      - ./redis/start.sh:/config/start.sh:ro
+      - ./redis/sentinel.conf:/config/redis.conf:ro
+      - sentinel-3-data:/data
+    depends_on:
+      redis:
+        condition: service_healthy
+      redis-replica:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "redis-cli", "-p", "26379", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  flight:
+    build:
+      context: .
+      dockerfile: services/flight/Dockerfile
+    environment:
+      REDIS_SENTINELS: sentinel-1,sentinel-2,sentinel-3
+      REDIS_MASTER_NAME: flight-cache
+      GRPC_API_KEY: ${GRPC_API_KEY:-flight_booking_dev_key}
+      DB_HOST: flight-db
+      DB_NAME: flight
+      DB_USER: flight
+      DB_PASSWORD: ${FLIGHT_DB_PASSWORD:-flight_dev_password}
+    ports:
+      - "${FLIGHT_GRPC_PORT:-50051}:50051"
+    depends_on:
+      flight-db:
+        condition: service_healthy
+      sentinel-1:
+        condition: service_healthy
+      sentinel-2:
+        condition: service_healthy
+      sentinel-3:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import grpc; channel = grpc.insecure_channel('localhost:50051'); grpc.channel_ready_future(channel).result(timeout=2); channel.close()"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  booking:
+    build:
+      context: .
+      dockerfile: services/booking/Dockerfile
+    environment:
+      GRPC_API_KEY: ${GRPC_API_KEY:-flight_booking_dev_key}
+      FLIGHT_SERVICE_ADDRESS: flight:50051
+      CB_FAILURE_THRESHOLD: ${CB_FAILURE_THRESHOLD:-5}
+      CB_RESET_TIMEOUT: ${CB_RESET_TIMEOUT:-10}
+      CB_WINDOW_SECONDS: ${CB_WINDOW_SECONDS:-120}
+      DB_HOST: booking-db
+      DB_NAME: booking
+      DB_USER: booking
+      DB_PASSWORD: ${BOOKING_DB_PASSWORD:-booking_dev_password}
+    ports:
+      - "${BOOKING_HTTP_PORT:-8000}:8000"
+    depends_on:
+      booking-db:
+        condition: service_healthy
+      flight:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health', timeout=2).close()"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+networks:
+  default:
+    ipam:
+      config:
+        - subnet: 172.30.240.0/24
+
+volumes:
+  booking-data:
+  flight-data:
+  redis-master-data:
+  redis-replica-data:
+  sentinel-1-data:
+  sentinel-2-data:
+  sentinel-3-data:

@@ -218,3 +218,7 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# Project-local scratch files and generated gRPC code
+/tmp/
+/services/*/app/generated/
